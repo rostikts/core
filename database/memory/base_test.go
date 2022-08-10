@@ -294,6 +294,39 @@ func TestDeleteDocument(t *testing.T) {
 	}
 }
 
+func TestDeleteDocuments(t *testing.T) {
+	task1 := newTask("should be deleted", false)
+
+	m, err := datastore.CreateDocument(adminAuth, confDBName, colName, task1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inserted := dec(m)
+
+	var clauses [][]interface{}
+	clauses = append(clauses, []interface{}{"title", "=", "should be deleted"})
+
+	filters, err := datastore.ParseQuery(clauses)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lp := internal.ListParams{Page: 1, Size: 5}
+	result, err := datastore.DeleteDocuments(adminAuth, confDBName, colName, filters, lp)
+	if err != nil {
+		t.Errorf("The documents are not deleted because of an error\nExpected err = nil\nActual err: %s", err.Error())
+	}
+	if result != 1 {
+		t.Errorf("The incorrect count of deleted documents is returned\nExpected - 1\nActual - %v", result)
+	}
+	m2, err := datastore.GetDocumentByID(adminAuth, confDBName, colName, inserted.ID)
+	if err == nil {
+		t.Fatal("error should have a value")
+	} else if m2 != nil {
+		t.Errorf("map should be nil got %v", m2)
+	}
+}
+
 func TestListCollections(t *testing.T) {
 	results, err := datastore.ListCollections(confDBName)
 	if err != nil {

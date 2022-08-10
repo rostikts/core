@@ -238,6 +238,23 @@ func (m *Memory) DeleteDocument(auth internal.Auth, dbName, col, id string) (n i
 	return
 }
 
+func (m *Memory) DeleteDocuments(auth internal.Auth, dbName, col string, filter map[string]any, params internal.ListParams) (deletedCount int64, err error) {
+	docs, err := m.QueryDocuments(auth, dbName, col, filter, params)
+	if err != nil {
+		return
+	}
+
+	for _, v := range docs.Results {
+		n, err := m.DeleteDocument(auth, dbName, col, v[FieldID].(string))
+		if err != nil {
+			return deletedCount, err
+		}
+		deletedCount += n
+	}
+
+	return
+}
+
 func (m *Memory) ListCollections(dbName string) (repos []string, err error) {
 	for key := range m.DB {
 		pairs := strings.Split(key, "_")
