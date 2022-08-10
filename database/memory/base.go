@@ -168,6 +168,28 @@ func (m *Memory) UpdateDocument(auth internal.Auth, dbName, col, id string, doc 
 	return
 }
 
+func (m *Memory) UpdateDocuments(auth internal.Auth, dbName, col string, filter map[string]any, editFields map[string]any, params internal.ListParams) (result internal.PagedResult, err error) {
+	docs, err := m.QueryDocuments(auth, dbName, col, filter, params)
+	if err != nil {
+		return
+	}
+
+	var editedDocs []map[string]any
+	for _, v := range docs.Results {
+		res, err := m.UpdateDocument(auth, dbName, col, v[FieldID].(string), editFields)
+		if err != nil {
+			return result, err
+		}
+		editedDocs = append(editedDocs, res)
+	}
+
+	result.Page = docs.Page
+	result.Size = docs.Size
+	result.Total = int64(len(result.Results))
+	result.Results = editedDocs
+	return
+}
+
 func (m *Memory) IncrementValue(auth internal.Auth, dbName, col, id, field string, n int) error {
 	doc, err := m.GetDocumentByID(auth, dbName, col, id)
 	if err != nil {
