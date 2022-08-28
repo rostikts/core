@@ -36,6 +36,7 @@ func (ps *memSubscriber) Close() error {
 		return errors.New("channel is already closed")
 	}
 	close(ps.msgCh)
+	ps.closed = true
 	return nil
 }
 
