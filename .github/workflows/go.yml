@@ -28,17 +28,17 @@ jobs:
     - name: Setup .env file (mongo)
       run: mv .gh-actions-env .env
 
-#    - name: Build
-#      run: make build
+    - name: Build
+      run: make build
 
     - name: Test (Mongo data store)
       run: make alltest
     
-#    - name: Change DATA_STORE to PostgreSQL
-#      run: sed -i 's/DATA_STORE=mongo/DATA_STORE=pg/g' .env
-#
-#    - name: Change DATABASE_URL to PG connection string
-#      run: sed -i 's/DATABASE_URL=mongodb:\/\/localhost:27017/DATABASE_URL=user=postgres password=postgres dbname=postgres sslmode=disable/g' .env
-#
-#    - name: Test (PostgreSQL data store)
-#      run: make alltest
+    - name: Change DATA_STORE to PostgreSQL
+      run: sed -i 's/DATA_STORE=pg/DATA_STORE=mongo/g' .env
+
+    - name: Change DATABASE_URL to PG connection string
+      run: sed -i 's/DATABASE_URL=user=postgres password=postgres dbname=postgres sslmode=disable/DATABASE_URL=mongodb:\/\/localhost:27017/g' .env
+
+    - name: Test (PostgreSQL data store)
+      run: make alltest
