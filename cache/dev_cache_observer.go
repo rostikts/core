@@ -17,7 +17,8 @@ type Subscriber interface {
 }
 
 type memSubscriber struct {
-	msgCh chan interface{}
+	closed bool
+	msgCh  chan interface{}
 }
 
 func NewSubscriber() *memSubscriber {
@@ -31,8 +32,7 @@ func (ps *memSubscriber) Channel() <-chan interface{} {
 }
 
 func (ps *memSubscriber) Close() error {
-	_, ok := <-ps.msgCh
-	if !ok {
+	if ps.closed {
 		return errors.New("channel is already closed")
 	}
 	close(ps.msgCh)
