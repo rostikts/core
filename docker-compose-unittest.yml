@@ -9,7 +9,7 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-    volumes: 
+    volumes:
       - ./sql/0001_bootstrap_db.sql:/docker-entrypoint-initdb.d/create_tables.sql
   
   mongo:
