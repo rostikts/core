@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/model"
 )
 
 type Task struct {
@@ -89,7 +89,7 @@ func TestListDocuments(t *testing.T) {
 
 	insertedTask := dec(inserted)
 
-	lp := internal.ListParams{Page: 1, Size: 25, SortDescending: true}
+	lp := model.ListParams{Page: 1, Size: 25, SortDescending: true}
 
 	result, err := datastore.ListDocuments(adminAuth, confDBName, colName, lp)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestQueryDocuments(t *testing.T) {
 	clauses = append(clauses, []interface{}{"title", "=", "where1"})
 	clauses = append(clauses, []interface{}{"done", "=", false})
 
-	lp := internal.ListParams{Page: 1, Size: 5}
+	lp := model.ListParams{Page: 1, Size: 5}
 
 	filters, err := datastore.ParseQuery(clauses)
 	if err != nil {
@@ -166,6 +166,40 @@ func TestGetDocumentByID(t *testing.T) {
 	found := dec(m2)
 	if len(found.ID) < 10 || found.ID != inserted.ID {
 		t.Errorf("expected id to be %s got %s", inserted.ID, found.ID)
+	}
+}
+
+func TestGetDocumentsByIDs(t *testing.T) {
+	input := []map[string]interface{}{newTask("getbyids1", false), newTask("getbyids1", false)}
+
+	var assertionTasks []map[string]interface{}
+	var ids []string
+
+	for _, v := range input {
+		res, err := datastore.CreateDocument(adminAuth, confDBName, colName, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, res["id"].(string))
+	}
+
+	for _, v := range ids {
+		m, err := datastore.GetDocumentByID(adminAuth, confDBName, colName, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertionTasks = append(assertionTasks, m)
+	}
+
+	res, err := datastore.GetDocumentsByIDs(adminAuth, confDBName, colName, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assertionTasks) != len(res) {
+		t.Fatal("received incorrect number of documents")
+	}
+	if !reflect.DeepEqual(assertionTasks, res) {
+		t.Errorf("Does not received expected tasks\nE: %v\nA: %v", assertionTasks, res)
 	}
 }
 
@@ -237,7 +271,7 @@ func TestUpdateDocuments(t *testing.T) {
 		t.Errorf("The incorrect number of documents are updated\nExpected: %v\nActual: %v", len(many), n)
 	}
 
-	docs, err := datastore.QueryDocuments(adminAuth, confDBName, colName, filters, internal.ListParams{Page: 1, Size: 5})
+	docs, err := datastore.QueryDocuments(adminAuth, confDBName, colName, filters, model.ListParams{Page: 1, Size: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +342,8 @@ func TestListCollections(t *testing.T) {
 }
 
 func TestListDocumentsWithNonExistingDB(t *testing.T) {
-	lp := internal.ListParams{Page: 1, Size: 25}
-	expected := internal.PagedResult{Page: 1, Size: 25}
+	lp := model.ListParams{Page: 1, Size: 25}
+	expected := model.PagedResult{Page: 1, Size: 25}
 	result, err := datastore.ListDocuments(adminAuth, "random_name", colName, lp)
 	if err != nil {
 		t.Fatal(err)
@@ -322,13 +356,13 @@ func TestQueryDocumentsWithNonExistingDB(t *testing.T) {
 	var clauses [][]interface{}
 	clauses = append(clauses, []interface{}{"title", "=", "where1"})
 
-	lp := internal.ListParams{Page: 1, Size: 5}
+	lp := model.ListParams{Page: 1, Size: 5}
 
 	filters, err := datastore.ParseQuery(clauses)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := internal.PagedResult{Page: 1, Size: 5}
+	expected := model.PagedResult{Page: 1, Size: 5}
 	result, err := datastore.QueryDocuments(adminAuth, "random_name", colName, filters, lp)
 	if err != nil {
 		t.Fatal(err)

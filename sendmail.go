@@ -4,13 +4,13 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/email"
-	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/middleware"
 )
 
 func sudoSendMail(w http.ResponseWriter, r *http.Request) {
-	var data internal.SendMailData
+	var data email.SendMailData
 	if err := parseBody(r.Body, &data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -26,7 +26,7 @@ func sudoSendMail(w http.ResponseWriter, r *http.Request) {
 		data.HTMLBody = data.TextBody
 	}
 
-	if err := emailer.Send(data); err != nil {
+	if err := backend.Emailer.Send(data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -37,7 +37,7 @@ func sudoSendMail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := datastore.IncrementMonthlyEmailSent(config.ID); err != nil {
+	if err := backend.DB.IncrementMonthlyEmailSent(config.ID); err != nil {
 		//TODO: do something better with this error
 		log.Println("error increasing monthly email sent: ", err)
 	}

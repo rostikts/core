@@ -3,7 +3,7 @@ package mongo
 import (
 	"time"
 
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/model"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -19,7 +19,7 @@ type LocalCustomer struct {
 	Created        time.Time          `bson:"created" json:"created"`
 }
 
-func toLocalCustomer(c internal.Customer) LocalCustomer {
+func toLocalCustomer(c model.Tenant) LocalCustomer {
 	return LocalCustomer{
 		Email:          c.Email,
 		StripeID:       c.StripeID,
@@ -31,8 +31,8 @@ func toLocalCustomer(c internal.Customer) LocalCustomer {
 	}
 }
 
-func fromLocalCustomer(c LocalCustomer) internal.Customer {
-	return internal.Customer{
+func fromLocalCustomer(c LocalCustomer) model.Tenant {
+	return model.Tenant{
 		ID:             c.ID.Hex(),
 		Email:          c.Email,
 		StripeID:       c.StripeID,
@@ -44,7 +44,7 @@ func fromLocalCustomer(c LocalCustomer) internal.Customer {
 	}
 }
 
-func (mg *Mongo) CreateCustomer(customer internal.Customer) (internal.Customer, error) {
+func (mg *Mongo) CreateTenant(customer model.Tenant) (model.Tenant, error) {
 	db := mg.Client.Database("sbsys")
 
 	lc := toLocalCustomer(customer)
@@ -65,8 +65,8 @@ type LocalBase struct {
 	MonthlyEmailSent int                `bson:"mes" json:"-"`
 }
 
-func toLocalBase(b internal.BaseConfig) LocalBase {
-	id, err := primitive.ObjectIDFromHex(b.CustomerID)
+func toLocalBase(b model.DatabaseConfig) LocalBase {
+	id, err := primitive.ObjectIDFromHex(b.TenantID)
 	if err != nil {
 		return LocalBase{}
 	}
@@ -80,10 +80,10 @@ func toLocalBase(b internal.BaseConfig) LocalBase {
 	}
 }
 
-func fromLocalBase(b LocalBase) internal.BaseConfig {
-	return internal.BaseConfig{
+func fromLocalBase(b LocalBase) model.DatabaseConfig {
+	return model.DatabaseConfig{
 		ID:               b.ID.Hex(),
-		CustomerID:       b.SBID.Hex(),
+		TenantID:         b.SBID.Hex(),
 		Name:             b.Name,
 		AllowedDomain:    b.Whitelist,
 		IsActive:         b.IsActive,
@@ -91,7 +91,7 @@ func fromLocalBase(b LocalBase) internal.BaseConfig {
 	}
 }
 
-func (mg *Mongo) CreateBase(base internal.BaseConfig) (internal.BaseConfig, error) {
+func (mg *Mongo) CreateDatabase(base model.DatabaseConfig) (model.DatabaseConfig, error) {
 	db := mg.Client.Database("sbsys")
 
 	lb := toLocalBase(base)
@@ -113,10 +113,10 @@ func (mg *Mongo) EmailExists(email string) (bool, error) {
 	return count > 0, nil
 }
 
-func (mg *Mongo) FindAccount(customerID string) (cus internal.Customer, err error) {
+func (mg *Mongo) FindTenant(tenantID string) (cus model.Tenant, err error) {
 	db := mg.Client.Database("sbsys")
 
-	accountID, err := primitive.ObjectIDFromHex(customerID)
+	accountID, err := primitive.ObjectIDFromHex(tenantID)
 	if err != nil {
 		return
 	}
@@ -130,7 +130,7 @@ func (mg *Mongo) FindAccount(customerID string) (cus internal.Customer, err erro
 	return
 }
 
-func (mg *Mongo) FindDatabase(baseID string) (conf internal.BaseConfig, err error) {
+func (mg *Mongo) FindDatabase(baseID string) (conf model.DatabaseConfig, err error) {
 	db := mg.Client.Database("sbsys")
 
 	id, err := primitive.ObjectIDFromHex(baseID)
@@ -155,7 +155,7 @@ func (mg *Mongo) DatabaseExists(name string) (bool, error) {
 	return count > 0, nil
 }
 
-func (mg *Mongo) ListDatabases() (results []internal.BaseConfig, err error) {
+func (mg *Mongo) ListDatabases() (results []model.DatabaseConfig, err error) {
 	db := mg.Client.Database("sbsys")
 
 	filter := bson.M{FieldIsActive: true}
@@ -181,7 +181,7 @@ func (mg *Mongo) ListDatabases() (results []internal.BaseConfig, err error) {
 	return
 }
 
-func (mg *Mongo) GetCustomerByStripeID(stripeID string) (cus internal.Customer, err error) {
+func (mg *Mongo) GetTenantByStripeID(stripeID string) (cus model.Tenant, err error) {
 	db := mg.Client.Database("sbsys")
 
 	var acct LocalCustomer
@@ -212,10 +212,10 @@ func (mg *Mongo) IncrementMonthlyEmailSent(baseID string) error {
 	return nil
 }
 
-func (mg *Mongo) ActivateCustomer(customerID string, active bool) error {
+func (mg *Mongo) ActivateTenant(tenantID string, active bool) error {
 	db := mg.Client.Database("sbsys")
 
-	oid, err := primitive.ObjectIDFromHex(customerID)
+	oid, err := primitive.ObjectIDFromHex(tenantID)
 	if err != nil {
 		return err
 	}
@@ -233,10 +233,10 @@ func (mg *Mongo) ActivateCustomer(customerID string, active bool) error {
 	return res.Err()
 }
 
-func (mg *Mongo) ChangeCustomerPlan(customerID string, plan int) error {
+func (mg *Mongo) ChangeTenantPlan(tenantID string, plan int) error {
 	db := mg.Client.Database("sbsys")
 
-	oid, err := primitive.ObjectIDFromHex(customerID)
+	oid, err := primitive.ObjectIDFromHex(tenantID)
 	if err != nil {
 		return err
 	}
@@ -251,15 +251,15 @@ func (mg *Mongo) ChangeCustomerPlan(customerID string, plan int) error {
 	return nil
 }
 
-func (mg *Mongo) EnableExternalLogin(customerID string, config map[string]internal.OAuthConfig) error {
-	b, err := internal.EncryptExternalLogins(config)
+func (mg *Mongo) EnableExternalLogin(tenantID string, config map[string]model.OAuthConfig) error {
+	b, err := model.EncryptExternalLogins(config)
 	if err != nil {
 		return err
 	}
 
 	db := mg.Client.Database("sbsys")
 
-	oid, err := primitive.ObjectIDFromHex(customerID)
+	oid, err := primitive.ObjectIDFromHex(tenantID)
 	if err != nil {
 		return err
 	}
@@ -278,7 +278,7 @@ func (mg *Mongo) NewID() string {
 	return primitive.NewObjectID().Hex()
 }
 
-func (mg *Mongo) DeleteCustomer(dbName, email string) error {
+func (mg *Mongo) DeleteTenant(dbName, email string) error {
 	db := mg.Client.Database(dbName)
 
 	if err := db.Drop(mg.Ctx); err != nil {

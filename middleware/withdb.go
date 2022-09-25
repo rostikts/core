@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/cache"
+	"github.com/staticbackendhq/core/database"
+	"github.com/staticbackendhq/core/model"
 )
 
 type BillingPortalGetter func(customerID string) (string, error)
 
-func WithDB(datastore internal.Persister, volatile internal.PubSuber, g BillingPortalGetter) Middleware {
+func WithDB(datastore database.Persister, volatile cache.Volatilizer, g BillingPortalGetter) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("SB-PUBLIC-KEY")
@@ -35,7 +37,7 @@ func WithDB(datastore internal.Persister, volatile internal.PubSuber, g BillingP
 
 			ctx := r.Context()
 
-			var conf internal.BaseConfig
+			var conf model.DatabaseConfig
 			if err := volatile.GetTyped(key, &conf); err == nil {
 				ctx = context.WithValue(ctx, ContextBase, conf)
 			} else {
@@ -46,7 +48,7 @@ func WithDB(datastore internal.Persister, volatile internal.PubSuber, g BillingP
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				} else if !conf.IsActive {
-					url, err := g(conf.CustomerID)
+					url, err := g(conf.TenantID)
 					if err != nil {
 						err = fmt.Errorf("error generating billing portal: %w", err)
 						http.Error(w, err.Error(), http.StatusInternalServerError)

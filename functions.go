@@ -3,14 +3,16 @@ package staticbackend
 import (
 	"net/http"
 
+	"github.com/staticbackendhq/core/backend"
+	"github.com/staticbackendhq/core/database"
 	"github.com/staticbackendhq/core/function"
-	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/middleware"
+	"github.com/staticbackendhq/core/model"
 )
 
 type functions struct {
 	dbName    string
-	datastore internal.Persister
+	datastore database.Persister
 }
 
 func (f *functions) add(w http.ResponseWriter, r *http.Request) {
@@ -20,13 +22,13 @@ func (f *functions) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var data internal.ExecData
+	var data model.ExecData
 	if err := parseBody(r.Body, &data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if _, err := datastore.AddFunction(conf.Name, data); err != nil {
+	if _, err := backend.DB.AddFunction(conf.Name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -51,7 +53,7 @@ func (f *functions) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := datastore.UpdateFunction(conf.Name, data.ID, data.Code, data.Trigger); err != nil {
+	if err := backend.DB.UpdateFunction(conf.Name, data.ID, data.Code, data.Trigger); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -67,7 +69,7 @@ func (f *functions) del(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := getURLPart(r.URL.Path, 3)
-	if err := datastore.DeleteFunction(conf.Name, name); err != nil {
+	if err := backend.DB.DeleteFunction(conf.Name, name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -91,7 +93,7 @@ func (f *functions) exec(w http.ResponseWriter, r *http.Request) {
 
 	functionName := getURLPart(r.URL.Path, 3)
 
-	fn, err := datastore.GetFunctionForExecution(conf.Name, functionName)
+	fn, err := backend.DB.GetFunctionForExecution(conf.Name, functionName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -100,7 +102,7 @@ func (f *functions) exec(w http.ResponseWriter, r *http.Request) {
 	env := &function.ExecutionEnvironment{
 		Auth:      auth,
 		BaseName:  conf.Name,
-		DataStore: datastore,
+		DataStore: backend.DB,
 		Data:      fn,
 	}
 
@@ -119,7 +121,7 @@ func (f *functions) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := datastore.ListFunctions(conf.Name)
+	results, err := backend.DB.ListFunctions(conf.Name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -137,7 +139,7 @@ func (f *functions) info(w http.ResponseWriter, r *http.Request) {
 
 	name := getURLPart(r.URL.Path, 3)
 
-	fn, err := datastore.GetFunctionByName(conf.Name, name)
+	fn, err := backend.DB.GetFunctionByName(conf.Name, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

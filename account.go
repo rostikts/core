@@ -2,16 +2,17 @@ package staticbackend
 
 import (
 	"fmt"
-	"math/rand"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/config"
 	emailFuncs "github.com/staticbackendhq/core/email"
 	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/logger"
 	"github.com/staticbackendhq/core/middleware"
+	"github.com/staticbackendhq/core/model"
 
 	"github.com/stripe/stripe-go/v72"
 	"github.com/stripe/stripe-go/v72/billingportal/session"
@@ -19,13 +20,8 @@ import (
 	"github.com/stripe/stripe-go/v72/sub"
 )
 
-var (
-	letterRunes = []rune("abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ2345679")
-)
-
 type accounts struct {
-	membership *membership
-	log        *logger.Logger
+	log *logger.Logger
 }
 
 func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +55,7 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exists, err := datastore.EmailExists(email)
+	exists, err := backend.DB.EmailExists(email)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -105,17 +101,17 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 
 	// create the account
 
-	cust := internal.Customer{
+	cust := model.Tenant{
 		ID:             "cust-local-dev", // easier for CLI/memory flow
 		Email:          email,
 		StripeID:       stripeCustomerID,
 		SubscriptionID: subID,
-		Plan:           internal.PlanIdea,
+		Plan:           model.PlanIdea,
 		IsActive:       active,
 		Created:        time.Now(),
 	}
 
-	cust, err = datastore.CreateCustomer(cust)
+	cust, err = backend.DB.CreateTenant(cust)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -123,32 +119,32 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 
 	// make sure the DB name is unique
 	retry := 10
-	dbName := randStringRunes(12)
+	dbName := internal.RandStringRunes(12)
 	if memoryMode {
 		dbName = "dev-memory-pk"
 	}
 	for {
-		exists, err = datastore.DatabaseExists(dbName)
+		exists, err = backend.DB.DatabaseExists(dbName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		} else if exists {
 			retry--
-			dbName = randStringRunes(12)
+			dbName = internal.RandStringRunes(12)
 			continue
 		}
 		break
 	}
 
-	base := internal.BaseConfig{
+	base := model.DatabaseConfig{
 		ID:            dbName, // easier for CLI/memory flow
-		CustomerID:    cust.ID,
+		TenantID:      cust.ID,
 		Name:          dbName,
 		IsActive:      active,
 		AllowedDomain: []string{"localhost"},
 	}
 
-	bc, err := datastore.CreateBase(base)
+	bc, err := backend.DB.CreateDatabase(base)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -156,12 +152,13 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 
 	// we create an admin user
 	// we make sure to switch DB
-	pw := randStringRunes(6)
+	pw := internal.RandStringRunes(6)
 	if memoryMode {
 		pw = "devpw1234"
 	}
 
-	if _, _, err := a.membership.createAccountAndUser(dbName, email, pw, 100); err != nil {
+	mship := backend.Membership(base)
+	if _, _, err := mship.CreateAccountAndUser(email, pw, 100); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -181,7 +178,7 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 		signUpURL = s.URL
 	}
 
-	token, err := datastore.FindTokenByEmail(dbName, email)
+	token, err := backend.DB.FindUserByEmail(dbName, email)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -208,7 +205,7 @@ func (a *accounts) create(w http.ResponseWriter, r *http.Request) {
 	<p>Dominic<br />Founder</p>
 	`, bc.ID, email, pw, rootToken)
 
-	ed := internal.SendMailData{
+	ed := emailFuncs.SendMailData{
 		From:     config.Current.FromEmail,
 		FromName: config.Current.FromName,
 		To:       email,
@@ -231,7 +228,8 @@ Admin user:
 	Password:	%s
 
 
-Root token:		%s
+Dev root token:		safe-to-use-in-dev-root-token
+Real root token:		%s
 
 
 Refer to the documentation at https://staticbackend.com/docs\n
@@ -239,8 +237,13 @@ Refer to the documentation at https://staticbackend.com/docs\n
 `,
 			bc.ID, email, pw, rootToken,
 		)
+
+		// cache the root token so caller can always use
+		// "safe-to-use-in-dev-root-token" as root token instead of
+		// the changing one across CLI start/stop
+		backend.Cache.Set("dev-root-token", rootToken)
 	} else {
-		err = emailer.Send(ed)
+		err = backend.Emailer.Send(ed)
 		if err != nil {
 			a.log.Error().Err(err).Msg("error sending email")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -280,7 +283,7 @@ func (a *accounts) portal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url, err := getStripePortalURL(conf.CustomerID)
+	url, err := getStripePortalURL(conf.TenantID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -290,7 +293,7 @@ func (a *accounts) portal(w http.ResponseWriter, r *http.Request) {
 }
 
 func getStripePortalURL(customerID string) (string, error) {
-	cus, err := datastore.FindAccount(customerID)
+	cus, err := backend.DB.FindTenant(customerID)
 	if err != nil {
 		return "", err
 	}
@@ -305,16 +308,4 @@ func getStripePortalURL(customerID string) (string, error) {
 	}
 
 	return s.URL, nil
-}
-
-func randStringRunes(n int) string {
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = letterRunes[rand.Intn(len(letterRunes))]
-	}
-
-	// due to PostgreSQL schema requiring letter start.
-	b[0] = letterRunes[0]
-
-	return string(b)
 }

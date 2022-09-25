@@ -3,7 +3,7 @@ package mongo
 import (
 	"errors"
 
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/model"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -14,7 +14,7 @@ type LocalAccount struct {
 	Email string             `bson:"email" json:"email"`
 }
 
-func (mg *Mongo) CreateUserAccount(dbName, email string) (id string, err error) {
+func (mg *Mongo) CreateAccount(dbName, email string) (id string, err error) {
 	db := mg.Client.Database(dbName)
 
 	a := LocalAccount{
@@ -31,7 +31,7 @@ func (mg *Mongo) CreateUserAccount(dbName, email string) (id string, err error) 
 	return
 }
 
-func (mg *Mongo) CreateUserToken(dbName string, tok internal.Token) (id string, err error) {
+func (mg *Mongo) CreateUser(dbName string, tok model.User) (id string, err error) {
 	db := mg.Client.Database(dbName)
 
 	tok.ID = primitive.NewObjectID().Hex()
@@ -86,7 +86,7 @@ func (mg *Mongo) UserSetPassword(dbName, tokenID, password string) error {
 	return nil
 }
 
-func (mg *Mongo) GetFirstTokenFromAccountID(dbName, accountID string) (tok internal.Token, err error) {
+func (mg *Mongo) GetFirstUserFromAccountID(dbName, accountID string) (tok model.User, err error) {
 	db := mg.Client.Database(dbName)
 
 	oid, err := primitive.ObjectIDFromHex(accountID)

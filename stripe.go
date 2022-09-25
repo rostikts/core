@@ -9,9 +9,10 @@ import (
 	"os"
 	"time"
 
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/config"
-	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/logger"
+	"github.com/staticbackendhq/core/model"
 	"github.com/stripe/stripe-go/v72"
 	"github.com/stripe/stripe-go/v72/webhook"
 )
@@ -85,7 +86,7 @@ func (wh *stripeWebhook) handleSubChanged(sub stripe.Subscription) {
 	wh.log.Info().Msgf("[Sub Changed]: for StripeID: %d", stripeID)
 
 	// find the customer
-	cus, err := datastore.GetCustomerByStripeID(stripeID)
+	cus, err := backend.DB.GetTenantByStripeID(stripeID)
 	if err != nil {
 		wh.log.Error().Err(err).Msg("STRIPE ERROR (find cus by stripe id)")
 		return
@@ -99,7 +100,7 @@ func (wh *stripeWebhook) handleSubChanged(sub stripe.Subscription) {
 		priceID := sub.Items.Data[0].Price.ID
 		newLevel := wh.priceToLevel(priceID)
 
-		if err := datastore.ChangeCustomerPlan(cus.ID, newLevel); err != nil {
+		if err := backend.DB.ChangeTenantPlan(cus.ID, newLevel); err != nil {
 			wh.log.Error().Err(err).Msg("STRIPE ERROR (update cus plan)")
 			return
 		}
@@ -112,13 +113,13 @@ func (wh *stripeWebhook) handleSubCancelled(sub stripe.Subscription) {
 
 	stripeID := sub.Customer.ID
 
-	cus, err := datastore.GetCustomerByStripeID(stripeID)
+	cus, err := backend.DB.GetTenantByStripeID(stripeID)
 	if err != nil {
 		wh.log.Error().Err(err).Msg("STRIPE ERROR (find cus by id)")
 		return
 	}
 
-	if err := datastore.ChangeCustomerPlan(cus.ID, internal.PlanIdea); err != nil {
+	if err := backend.DB.ChangeTenantPlan(cus.ID, model.PlanIdea); err != nil {
 		wh.log.Error().Err(err).Msg("STRIPE ERROR (update cus plan)")
 	}
 }
@@ -126,7 +127,7 @@ func (wh *stripeWebhook) handleSubCancelled(sub stripe.Subscription) {
 func (wh *stripeWebhook) handlePaymentMethodAttached(pm stripe.PaymentMethod) {
 	stripeID := pm.Customer.ID
 
-	cus, err := datastore.GetCustomerByStripeID(stripeID)
+	cus, err := backend.DB.GetTenantByStripeID(stripeID)
 	if err != nil {
 		wh.log.Error().Err(err).Msg("STRIPE ERROR (get cus by stripe id)")
 		return
@@ -136,7 +137,7 @@ func (wh *stripeWebhook) handlePaymentMethodAttached(pm stripe.PaymentMethod) {
 		return
 	}
 
-	if err := datastore.ActivateCustomer(cus.ID, true); err != nil {
+	if err := backend.DB.ActivateTenant(cus.ID, true); err != nil {
 		wh.log.Error().Err(err).Msgf("STRIPE ERROR (activate cus): %d", stripeID)
 	}
 }
@@ -144,14 +145,14 @@ func (wh *stripeWebhook) handlePaymentMethodAttached(pm stripe.PaymentMethod) {
 func (wh *stripeWebhook) priceToLevel(priceID string) int {
 	switch priceID {
 	case config.Current.StripePriceIDIdea:
-		return internal.PlanIdea
+		return model.PlanIdea
 	case config.Current.StripePriceIDLaunch:
-		return internal.PleanLaunch
+		return model.PleanLaunch
 	case config.Current.StripePriceIDTraction:
-		return internal.PlanTraction
+		return model.PlanTraction
 	case config.Current.StripePriceIDGrowth:
-		return internal.PlanGrowth
+		return model.PlanGrowth
 	default:
-		return internal.PlanIdea
+		return model.PlanIdea
 	}
 }

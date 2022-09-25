@@ -2,35 +2,24 @@ package staticbackend
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/staticbackendhq/core/cache"
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/config"
-	"github.com/staticbackendhq/core/database/memory"
-	"github.com/staticbackendhq/core/database/mongo"
-	"github.com/staticbackendhq/core/database/postgresql"
-	"github.com/staticbackendhq/core/email"
-	"github.com/staticbackendhq/core/function"
 	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/logger"
 	"github.com/staticbackendhq/core/middleware"
+	"github.com/staticbackendhq/core/model"
 	"github.com/staticbackendhq/core/realtime"
-	"github.com/staticbackendhq/core/storage"
 
 	"github.com/stripe/stripe-go/v72"
-	mongodrv "go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"golang.org/x/sync/errgroup"
 
 	_ "github.com/lib/pq"
@@ -40,17 +29,6 @@ const (
 	AppEnvDev  = "dev"
 	AppEnvProd = "prod"
 )
-
-var (
-	datastore internal.Persister
-	volatile  internal.Volatilizer
-	emailer   internal.Mailer
-	storer    internal.Storer
-)
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
 
 // Start starts the web server and all dependencies services
 func Start(c config.AppConfig, log *logger.Logger) {
@@ -67,10 +45,12 @@ func Start(c config.AppConfig, log *logger.Logger) {
 		}
 	}
 
-	initServices(c.DatabaseURL, log)
+	// the backend pckage and this bkn instance holds
+	// all services like the Datastore, Filestore, Emailers, etc.
+	backend.Setup(c)
 
 	// websockets
-	hub := newHub(volatile)
+	hub := newHub(backend.Cache)
 	go hub.run()
 
 	// Server Send Event, alternative to websocket
@@ -79,45 +59,45 @@ func Start(c config.AppConfig, log *logger.Logger) {
 		// useful for an Intercom-like SaaS I'm building.
 		if strings.HasPrefix(key, "__tmp__experimental_public") {
 			// let's create the most minimal authentication possible
-			a := internal.Auth{
-				AccountID: randStringRunes(30),
-				UserID:    randStringRunes(30),
+			a := model.Auth{
+				AccountID: internal.RandStringRunes(30),
+				UserID:    internal.RandStringRunes(30),
 				Email:     "exp@tmp.com",
 				Role:      0,
 				Token:     key,
 			}
 
-			if err := volatile.SetTyped(key, a); err != nil {
+			if err := backend.Cache.SetTyped(key, a); err != nil {
 				return key, err
 			}
 
 			return key, nil
 		}
 
-		auth, err := middleware.ValidateAuthKey(datastore, volatile, ctx, key)
+		auth, err := middleware.ValidateAuthKey(backend.DB, backend.Cache, ctx, key)
 		if err != nil {
 			return "", err
 		}
 
 		// set base:token useful when executing pubsub event message / function
-		conf, ok := ctx.Value(middleware.ContextBase).(internal.BaseConfig)
+		conf, ok := ctx.Value(middleware.ContextBase).(model.DatabaseConfig)
 		if !ok {
 			return "", errors.New("could not find base config")
 		}
 
 		//TODO: Lots of repetition of this, needs to be refactor
-		if err := volatile.SetTyped(key, auth); err != nil {
+		if err := backend.Cache.SetTyped(key, auth); err != nil {
 			return "", err
 		}
-		if err := volatile.SetTyped("base:"+key, conf); err != nil {
+		if err := backend.Cache.SetTyped("base:"+key, conf); err != nil {
 			return "", err
 		}
 
 		return key, nil
-	}, volatile, log)
+	}, backend.Cache, log)
 
 	database := &Database{
-		cache: volatile,
+		cache: backend.Cache,
 		log:   log,
 	}
 
@@ -127,18 +107,18 @@ func Start(c config.AppConfig, log *logger.Logger) {
 
 	pubWithDB := []middleware.Middleware{
 		middleware.Cors(),
-		middleware.WithDB(datastore, volatile, getStripePortalURL),
+		middleware.WithDB(backend.DB, backend.Cache, getStripePortalURL),
 	}
 
 	stdAuth := []middleware.Middleware{
 		middleware.Cors(),
-		middleware.WithDB(datastore, volatile, getStripePortalURL),
-		middleware.RequireAuth(datastore, volatile),
+		middleware.WithDB(backend.DB, backend.Cache, getStripePortalURL),
+		middleware.RequireAuth(backend.DB, backend.Cache),
 	}
 
 	stdRoot := []middleware.Middleware{
-		middleware.WithDB(datastore, volatile, getStripePortalURL),
-		middleware.RequireRoot(datastore),
+		middleware.WithDB(backend.DB, backend.Cache, getStripePortalURL),
+		middleware.RequireRoot(backend.DB, backend.Cache),
 	}
 
 	m := &membership{log: log}
@@ -183,7 +163,7 @@ func Start(c config.AppConfig, log *logger.Logger) {
 	http.Handle("/sudo/cache", middleware.Chain(http.HandlerFunc(sudoCache), stdRoot...))
 
 	// account
-	acct := &accounts{membership: m, log: log}
+	acct := &accounts{log: log}
 	http.Handle("/account/init", middleware.Chain(http.HandlerFunc(acct.create), stdPub...))
 	http.Handle("/account/auth", middleware.Chain(http.HandlerFunc(acct.auth), stdRoot...))
 	http.Handle("/account/portal", middleware.Chain(http.HandlerFunc(acct.portal), stdRoot...))
@@ -200,7 +180,7 @@ func Start(c config.AppConfig, log *logger.Logger) {
 
 	http.Handle("/sse/connect", middleware.Chain(http.HandlerFunc(b.Accept), pubWithDB...))
 	receiveMessage := func(w http.ResponseWriter, r *http.Request) {
-		var msg internal.Command
+		var msg model.Command
 		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -213,7 +193,7 @@ func Start(c config.AppConfig, log *logger.Logger) {
 	http.Handle("/sse/msg", middleware.Chain(http.HandlerFunc(receiveMessage), pubWithDB...))
 
 	// server-side functions
-	f := &functions{datastore: datastore}
+	f := &functions{datastore: backend.DB}
 	http.Handle("/fn/add", middleware.Chain(http.HandlerFunc(f.add), stdRoot...))
 	http.Handle("/fn/update", middleware.Chain(http.HandlerFunc(f.update), stdRoot...))
 	http.Handle("/fn/delete/", middleware.Chain(http.HandlerFunc(f.del), stdRoot...))
@@ -286,116 +266,8 @@ func Start(c config.AppConfig, log *logger.Logger) {
 	}
 }
 
-func initServices(dbHost string, log *logger.Logger) {
-
-	if strings.EqualFold(dbHost, "mem") {
-		volatile = cache.NewDevCache(log)
-	} else {
-		volatile = cache.NewCache(log)
-	}
-
-	persister := config.Current.DataStore
-	if strings.EqualFold(dbHost, "mem") {
-		datastore = memory.New(volatile.PublishDocument)
-	} else if strings.EqualFold(persister, "mongo") {
-		cl, err := openMongoDatabase(dbHost)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to create connection with mongodb")
-		}
-		datastore = mongo.New(cl, volatile.PublishDocument, log)
-	} else {
-		cl, err := openPGDatabase(dbHost)
-		if err != nil {
-			log.Fatal().Err(err).Msg("failed to create connection with postgres")
-		}
-
-		datastore = postgresql.New(cl, volatile.PublishDocument, "./sql/", log)
-	}
-
-	mp := config.Current.MailProvider
-	if strings.EqualFold(mp, internal.MailProviderSES) {
-		emailer = email.AWSSES{}
-	} else {
-		emailer = email.Dev{}
-	}
-
-	sp := config.Current.StorageProvider
-	if strings.EqualFold(sp, internal.StorageProviderS3) {
-		storer = storage.S3{}
-	} else {
-		storer = storage.Local{}
-	}
-
-	sub := &function.Subscriber{Log: log}
-	sub.PubSub = volatile
-	sub.GetExecEnv = func(token string) (function.ExecutionEnvironment, error) {
-		var exe function.ExecutionEnvironment
-
-		var conf internal.BaseConfig
-		// for public websocket (experimental)
-		if strings.HasPrefix(token, "__tmp__experimental_public") {
-			pk := strings.Replace(token, "__tmp__experimental_public_", "", -1)
-			pairs := strings.Split(pk, "_")
-			log.Info().Msgf("checking for base in cache: %d", pairs[0])
-			if err := volatile.GetTyped(pairs[0], &conf); err != nil {
-				log.Error().Err(err).Msg("cannot find base for public websocket")
-				return exe, err
-			}
-		} else if err := volatile.GetTyped("base:"+token, &conf); err != nil {
-			log.Error().Err(err).Msg("cannot find base")
-			return exe, err
-		}
-
-		var auth internal.Auth
-		if err := volatile.GetTyped(token, &auth); err != nil {
-			log.Error().Err(err).Msg("cannot find auth")
-			return exe, err
-		}
-
-		exe.Auth = auth
-		exe.BaseName = conf.Name
-		exe.DataStore = datastore
-		exe.Volatile = volatile
-
-		return exe, nil
-	}
-
-	// start system events subscriber
-	go sub.Start()
-}
-
-func openMongoDatabase(dbHost string) (*mongodrv.Client, error) {
-	uri := dbHost
-
-	ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
-	cl, err := mongodrv.Connect(ctx, options.Client().ApplyURI(uri))
-	if err != nil {
-		return nil, fmt.Errorf("cannot connect to mongo: %v", err)
-	}
-
-	if err := cl.Ping(ctx, readpref.Primary()); err != nil {
-		return nil, fmt.Errorf("Ping failed: %v", err)
-	}
-
-	return cl, nil
-}
-
-func openPGDatabase(dbHost string) (*sql.DB, error) {
-	//connStr := "user=postgres password=example dbname=test sslmode=disable"
-	dbConn, err := sql.Open("postgres", dbHost)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := dbConn.Ping(); err != nil {
-		return nil, err
-	}
-
-	return dbConn, nil
-}
-
 func ping(w http.ResponseWriter, r *http.Request) {
-	if err := datastore.Ping(); err != nil {
+	if err := backend.DB.Ping(); err != nil {
 		http.Error(w, "connection failed to database, I'm down.", http.StatusInternalServerError)
 		return
 	}
@@ -414,7 +286,7 @@ func sudoCache(w http.ResponseWriter, r *http.Request) {
 		key := fmt.Sprintf("%s_%s", conf.Name, r.URL.Query().Get("key"))
 
 		if typ == "queue" {
-			val, err := volatile.DequeueWork(key)
+			val, err := backend.Cache.DequeueWork(key)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -423,7 +295,7 @@ func sudoCache(w http.ResponseWriter, r *http.Request) {
 			respond(w, http.StatusOK, val)
 			return
 		}
-		val, err := volatile.Get(key)
+		val, err := backend.Cache.Get(key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -444,14 +316,14 @@ func sudoCache(w http.ResponseWriter, r *http.Request) {
 		data.Key = fmt.Sprintf("%s_%s", conf.Name, data.Key)
 
 		if data.Type == "queue" {
-			if err := volatile.QueueWork(data.Key, data.Value); err != nil {
+			if err := backend.Cache.QueueWork(data.Key, data.Value); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			respond(w, http.StatusOK, true)
 			return
 		}
-		if err := volatile.Set(data.Key, data.Value); err != nil {
+		if err := backend.Cache.Set(data.Key, data.Value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

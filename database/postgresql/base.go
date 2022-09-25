@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/model"
 )
 
 const (
@@ -42,10 +41,10 @@ func (j *JSONB) Scan(value interface{}) error {
 	return json.Unmarshal(b, &j)
 }
 
-func (pg *PostgreSQL) CreateDocument(auth internal.Auth, dbName, col string, doc map[string]interface{}) (inserted map[string]interface{}, err error) {
+func (pg *PostgreSQL) CreateDocument(auth model.Auth, dbName, col string, doc map[string]interface{}) (inserted map[string]interface{}, err error) {
 	inserted = doc
 
-	cleancol := internal.CleanCollectionName(col)
+	cleancol := model.CleanCollectionName(col)
 
 	//TODO: find a good way to prevent doing the create
 	// table if not exists each time
@@ -73,7 +72,7 @@ func (pg *PostgreSQL) CreateDocument(auth internal.Auth, dbName, col string, doc
 		INSERT INTO %s.%s(account_id, owner_id, data, created)
 		VALUES($1, $2, $3, $4)
 		RETURNING id;
-	`, dbName, internal.CleanCollectionName(col))
+	`, dbName, model.CleanCollectionName(col))
 
 	b, err := json.Marshal(doc)
 	if err != nil {
@@ -89,12 +88,12 @@ func (pg *PostgreSQL) CreateDocument(auth internal.Auth, dbName, col string, doc
 	inserted[FieldID] = id
 	inserted[FieldAccountID] = auth.AccountID
 
-	pg.PublishDocument("db-"+col, internal.MsgTypeDBCreated, inserted)
+	pg.PublishDocument("db-"+col, model.MsgTypeDBCreated, inserted)
 
 	return
 }
 
-func (pg *PostgreSQL) BulkCreateDocument(auth internal.Auth, dbName, col string, docs []interface{}) error {
+func (pg *PostgreSQL) BulkCreateDocument(auth model.Auth, dbName, col string, docs []interface{}) error {
 	//TODO: Naive implementation, not sure if PostgreSQL
 	// has a better way for bulk insert, but will suffice for now.
 	for _, doc := range docs {
@@ -110,7 +109,7 @@ func (pg *PostgreSQL) BulkCreateDocument(auth internal.Auth, dbName, col string,
 	return nil
 }
 
-func (pg *PostgreSQL) ListDocuments(auth internal.Auth, dbName, col string, params internal.ListParams) (result internal.PagedResult, err error) {
+func (pg *PostgreSQL) ListDocuments(auth model.Auth, dbName, col string, params model.ListParams) (result model.PagedResult, err error) {
 	where := secureRead(auth, col)
 
 	paging := setPaging(params)
@@ -122,7 +121,7 @@ func (pg *PostgreSQL) ListDocuments(auth internal.Auth, dbName, col string, para
 		SELECT COUNT(*) 
 		FROM %s.%s 
 		%s
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	if err = pg.DB.QueryRow(qry, auth.AccountID, auth.UserID).Scan(&result.Total); err != nil {
 		if !isTableExists(err) {
@@ -136,7 +135,7 @@ func (pg *PostgreSQL) ListDocuments(auth internal.Auth, dbName, col string, para
 		FROM %s.%s 
 		%s
 		%s
-	`, dbName, internal.CleanCollectionName(col), where, paging)
+	`, dbName, model.CleanCollectionName(col), where, paging)
 
 	rows, err := pg.DB.Query(qry, auth.AccountID, auth.UserID)
 	if err != nil {
@@ -161,7 +160,7 @@ func (pg *PostgreSQL) ListDocuments(auth internal.Auth, dbName, col string, para
 	return
 }
 
-func (pg *PostgreSQL) QueryDocuments(auth internal.Auth, dbName, col string, filters map[string]interface{}, params internal.ListParams) (result internal.PagedResult, err error) {
+func (pg *PostgreSQL) QueryDocuments(auth model.Auth, dbName, col string, filters map[string]interface{}, params model.ListParams) (result model.PagedResult, err error) {
 	where := secureRead(auth, col)
 	where = applyFilter(where, filters)
 
@@ -174,7 +173,7 @@ func (pg *PostgreSQL) QueryDocuments(auth internal.Auth, dbName, col string, fil
 		SELECT COUNT(*) 
 		FROM %s.%s 
 		%s
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	if err = pg.DB.QueryRow(qry, auth.AccountID, auth.UserID).Scan(&result.Total); err != nil {
 		if !isTableExists(err) {
@@ -188,7 +187,7 @@ func (pg *PostgreSQL) QueryDocuments(auth internal.Auth, dbName, col string, fil
 		FROM %s.%s 
 		%s
 		%s
-	`, dbName, internal.CleanCollectionName(col), where, paging)
+	`, dbName, model.CleanCollectionName(col), where, paging)
 
 	rows, err := pg.DB.Query(qry, auth.AccountID, auth.UserID)
 	if err != nil {
@@ -212,14 +211,14 @@ func (pg *PostgreSQL) QueryDocuments(auth internal.Auth, dbName, col string, fil
 	return
 }
 
-func (pg *PostgreSQL) GetDocumentByID(auth internal.Auth, dbName, col, id string) (map[string]interface{}, error) {
+func (pg *PostgreSQL) GetDocumentByID(auth model.Auth, dbName, col, id string) (map[string]interface{}, error) {
 	where := secureRead(auth, col)
 
 	qry := fmt.Sprintf(`
 		SELECT * 
 		FROM %s.%s 
 		%s AND id = $3
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	row := pg.DB.QueryRow(qry, auth.AccountID, auth.UserID, id)
 
@@ -234,14 +233,43 @@ func (pg *PostgreSQL) GetDocumentByID(auth internal.Auth, dbName, col, id string
 	return doc.Data, nil
 }
 
-func (pg *PostgreSQL) UpdateDocument(auth internal.Auth, dbName, col, id string, doc map[string]interface{}) (map[string]interface{}, error) {
+func (pg *PostgreSQL) GetDocumentsByIDs(auth model.Auth, dbName, col string, ids []string) (docs []map[string]interface{}, err error) {
+	where := secureRead(auth, col)
+
+	qry := fmt.Sprintf(`
+		SELECT * 
+		FROM %s.%s 
+		%s AND id in ('%s'::uuid)
+	`, dbName, model.CleanCollectionName(col), where, strings.Join(ids, "'::uuid,'"))
+
+	rows, err := pg.DB.Query(qry, auth.AccountID, auth.UserID)
+	if err != nil {
+		return []map[string]interface{}{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var doc Document
+		if err = scanDocument(rows, &doc); err != nil {
+			return []map[string]interface{}{}, err
+		}
+
+		doc.Data[FieldID] = doc.ID
+		doc.Data[FieldAccountID] = doc.AccountID
+		docs = append(docs, doc.Data)
+	}
+
+	return docs, nil
+}
+
+func (pg *PostgreSQL) UpdateDocument(auth model.Auth, dbName, col, id string, doc map[string]interface{}) (map[string]interface{}, error) {
 	where := secureWrite(auth, col)
 
 	qry := fmt.Sprintf(`
 		UPDATE %s.%s SET
 			data = data || $4
 		%s AND id = $3
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	b, err := json.Marshal(doc)
 	if err != nil {
@@ -257,20 +285,43 @@ func (pg *PostgreSQL) UpdateDocument(auth internal.Auth, dbName, col, id string,
 		return nil, err
 	}
 
-	pg.PublishDocument("db-"+col, internal.MsgTypeDBUpdated, updated)
+	pg.PublishDocument("db-"+col, model.MsgTypeDBUpdated, updated)
 
 	return updated, nil
 }
 
-func (pg *PostgreSQL) UpdateDocuments(auth internal.Auth, dbName, col string, filters map[string]interface{}, updateFields map[string]interface{}) (n int64, err error) {
+func (pg *PostgreSQL) UpdateDocuments(auth model.Auth, dbName, col string, filters map[string]interface{}, updateFields map[string]interface{}) (n int64, err error) {
 	where := secureWrite(auth, col)
 	where = applyFilter(where, filters)
 
+	var ids []string
 	qry := fmt.Sprintf(`
+		SELECT id
+		FROM %s.%s 
+		%s
+	`, dbName, model.CleanCollectionName(col), where)
+
+	rows, err := pg.DB.Query(qry, auth.AccountID, auth.UserID)
+	if err != nil {
+		return
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			pg.log.Error().Err(err).Msg("error occurred during scanning id for UpdateDocument event")
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	qry = fmt.Sprintf(`
 		UPDATE %s.%s SET
 			data = data || $3
 		%s
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	b, err := json.Marshal(updateFields)
 	if err != nil {
@@ -284,17 +335,27 @@ func (pg *PostgreSQL) UpdateDocuments(auth internal.Auth, dbName, col string, fi
 	if err != nil {
 		return 0, err
 	}
+
+	go func() {
+		docs, err := pg.GetDocumentsByIDs(auth, dbName, col, ids)
+		if err != nil {
+			pg.log.Error().Err(err).Msgf("the documents with ids=%#s are not received for publishDocument event", ids)
+		}
+		for _, doc := range docs {
+			pg.PublishDocument("db-"+col, model.MsgTypeDBUpdated, doc)
+		}
+	}()
 	return
 }
 
-func (pg *PostgreSQL) IncrementValue(auth internal.Auth, dbName, col, id, field string, n int) error {
+func (pg *PostgreSQL) IncrementValue(auth model.Auth, dbName, col, id, field string, n int) error {
 	where := secureWrite(auth, col)
 
 	qry := fmt.Sprintf(`
 		UPDATE %s.%s SET
 		data = jsonb_set(data, '{%s}', (COALESCE(data->>'%s','0')::int + $4)::text::jsonb)
 		%s AND id = $3
-	`, dbName, internal.CleanCollectionName(col), field, field, where)
+	`, dbName, model.CleanCollectionName(col), field, field, where)
 
 	if _, err := pg.DB.Exec(qry, auth.AccountID, auth.UserID, id, n); err != nil {
 		return err
@@ -305,26 +366,26 @@ func (pg *PostgreSQL) IncrementValue(auth internal.Auth, dbName, col, id, field 
 		return err
 	}
 
-	pg.PublishDocument("db-"+col, internal.MsgTypeDBUpdated, updated)
+	pg.PublishDocument("db-"+col, model.MsgTypeDBUpdated, updated)
 
 	return nil
 }
 
-func (pg *PostgreSQL) DeleteDocument(auth internal.Auth, dbName, col, id string) (int64, error) {
+func (pg *PostgreSQL) DeleteDocument(auth model.Auth, dbName, col, id string) (int64, error) {
 	where := secureWrite(auth, col)
 
 	qry := fmt.Sprintf(`
 		DELETE 
 		FROM %s.%s 
 		%s AND id = $3
-	`, dbName, internal.CleanCollectionName(col), where)
+	`, dbName, model.CleanCollectionName(col), where)
 
 	res, err := pg.DB.Exec(qry, auth.AccountID, auth.UserID, id)
 	if err != nil {
 		return 0, err
 	}
 
-	pg.PublishDocument("db-"+col, internal.MsgTypeDBDeleted, id)
+	pg.PublishDocument("db-"+col, model.MsgTypeDBDeleted, id)
 	return res.RowsAffected()
 }
 

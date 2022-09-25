@@ -6,16 +6,17 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/staticbackendhq/core/internal"
-
 	"github.com/gbrlsnchs/jwt/v3"
+	"github.com/staticbackendhq/core/cache"
+	"github.com/staticbackendhq/core/database"
+	"github.com/staticbackendhq/core/model"
 )
 
 const (
 	RootRole = 100
 )
 
-func RequireAuth(datastore internal.Persister, volatile internal.PubSuber) Middleware {
+func RequireAuth(datastore database.Persister, volatile cache.Volatilizer) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("Authorization")
@@ -24,13 +25,13 @@ func RequireAuth(datastore internal.Persister, volatile internal.PubSuber) Middl
 				// if they requested a public repo we let them continue
 				// to next security check.
 				if strings.HasPrefix(r.URL.Path, "/db/pub_") || strings.HasPrefix(r.URL.Path, "/query/pub_") {
-					a := internal.Auth{
+					a := model.Auth{
 						AccountID: "public_repo_called",
 						UserID:    "public_repo_called",
 						Email:     "",
 						Role:      0,
 						Token:     "pub",
-						Plan:      internal.PlanIdea,
+						Plan:      model.PlanIdea,
 					}
 
 					ctx := context.WithValue(r.Context(), ContextAuth, a)
@@ -67,20 +68,20 @@ func RequireAuth(datastore internal.Persister, volatile internal.PubSuber) Middl
 	}
 }
 
-func ValidateAuthKey(datastore internal.Persister, volatile internal.PubSuber, ctx context.Context, key string) (internal.Auth, error) {
-	a := internal.Auth{}
+func ValidateAuthKey(datastore database.Persister, volatile cache.Volatilizer, ctx context.Context, key string) (model.Auth, error) {
+	a := model.Auth{}
 
-	var pl internal.JWTPayload
-	if _, err := jwt.Verify([]byte(key), internal.HashSecret, &pl); err != nil {
+	var pl model.JWTPayload
+	if _, err := jwt.Verify([]byte(key), model.HashSecret, &pl); err != nil {
 		return a, fmt.Errorf("could not verify your authentication token: %s", err.Error())
 	}
 
-	conf, ok := ctx.Value(ContextBase).(internal.BaseConfig)
+	conf, ok := ctx.Value(ContextBase).(model.DatabaseConfig)
 	if !ok {
 		return a, fmt.Errorf("invalid StaticBackend public token")
 	}
 
-	var auth internal.Auth
+	var auth model.Auth
 	if err := volatile.GetTyped(pl.Token, &auth); err == nil {
 		return auth, nil
 	}
@@ -90,17 +91,22 @@ func ValidateAuthKey(datastore internal.Persister, volatile internal.PubSuber, c
 		return a, fmt.Errorf("invalid authentication token")
 	}
 
-	token, err := datastore.FindToken(conf.Name, parts[0], parts[1])
+	token, err := datastore.FindUser(conf.Name, parts[0], parts[1])
 	if err != nil {
 		return a, fmt.Errorf("error retrieving your token: %s", err.Error())
 	}
 
-	cus, err := datastore.FindAccount(token.AccountID)
+	// TODO: This was datastore.FindAccount(token.AccountID) before the
+	// backend refactor, this is very strange and should not have worked.....
+	// I changed it to use the tenant's ID from current database, which was what
+	// would have made sense.  can't explain why the previous datastore.FindAccount
+	// could find the "customer" via the user's Account ID, does not make ANY sense
+	cus, err := datastore.FindTenant(conf.TenantID)
 	if err != nil {
 		return a, fmt.Errorf("error retrieving your customer account: %v", err)
 	}
 
-	a = internal.Auth{
+	a = model.Auth{
 		AccountID: token.AccountID,
 		UserID:    token.ID,
 		Email:     token.Email,
@@ -120,7 +126,7 @@ func ValidateAuthKey(datastore internal.Persister, volatile internal.PubSuber, c
 	return a, nil
 }
 
-func RequireRoot(datastore internal.Persister) Middleware {
+func RequireRoot(datastore database.Persister, volatile cache.Volatilizer) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("Authorization")
@@ -146,8 +152,24 @@ func RequireRoot(datastore internal.Persister) Middleware {
 
 			key = strings.Replace(key, "Bearer ", "", -1)
 
+			// in dev mode the cache will have a key called:
+			// dev-root-token which hold the dynamically changing root token
+			// which changes each stop/start of the CLI. Using
+			// "safe-to-use-in-dev-root-token" as root token will
+			// get the real root token removing the need to update the root token
+			// in dev mode
+			if key == "safe-to-use-in-dev-root-token" {
+				rt, err := volatile.Get("dev-root-token")
+				if err != nil {
+					http.Error(w, "not in dev mode", http.StatusUnauthorized)
+					return
+				}
+
+				key = rt
+			}
+
 			ctx := r.Context()
-			conf, ok := ctx.Value(ContextBase).(internal.BaseConfig)
+			conf, ok := ctx.Value(ContextBase).(model.DatabaseConfig)
 			if !ok {
 				http.Error(w, "invalid StaticBackend public key", http.StatusBadRequest)
 				return
@@ -159,7 +181,7 @@ func RequireRoot(datastore internal.Persister) Middleware {
 				return
 			}
 
-			a := internal.Auth{
+			a := model.Auth{
 				AccountID: tok.AccountID,
 				UserID:    tok.ID,
 				Email:     tok.Email,
@@ -174,8 +196,8 @@ func RequireRoot(datastore internal.Persister) Middleware {
 	}
 }
 
-func ValidateRootToken(datastore internal.Persister, base, token string) (internal.Token, error) {
-	tok := internal.Token{}
+func ValidateRootToken(datastore database.Persister, base, token string) (model.User, error) {
+	tok := model.User{}
 
 	parts := strings.Split(token, "|")
 	if len(parts) != 3 {
@@ -186,7 +208,7 @@ func ValidateRootToken(datastore internal.Persister, base, token string) (intern
 	acctID := parts[1]
 	token = parts[2]
 
-	tok, err := datastore.FindRootToken(base, id, acctID, token)
+	tok, err := datastore.FindRootUser(base, id, acctID, token)
 	if err != nil {
 		return tok, err
 	} else if tok.Role < RootRole {

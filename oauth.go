@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/config"
-	"github.com/staticbackendhq/core/internal"
 	"github.com/staticbackendhq/core/logger"
 	"github.com/staticbackendhq/core/middleware"
+	"github.com/staticbackendhq/core/model"
 
 	"github.com/markbates/goth"
 	"github.com/markbates/goth/providers/facebook"
@@ -24,8 +25,7 @@ const (
 )
 
 type ExternalLogins struct {
-	membership *membership
-	log        *logger.Logger
+	log *logger.Logger
 }
 
 type ExternalUser struct {
@@ -53,12 +53,12 @@ func (el *ExternalLogins) login() http.Handler {
 			return
 		}
 
-		if err := volatile.SetTyped("oauth_"+reqID, conf); err != nil {
+		if err := backend.Cache.SetTyped("oauth_"+reqID, conf); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		customer, err := datastore.FindAccount(conf.CustomerID)
+		customer, err := backend.DB.FindTenant(conf.TenantID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -90,7 +90,7 @@ func (el *ExternalLogins) login() http.Handler {
 				return
 			}
 
-			if err := volatile.SetTyped(reqID+"_session", sess.Marshal()); err != nil {
+			if err := backend.Cache.SetTyped(reqID+"_session", sess.Marshal()); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -106,8 +106,8 @@ func (el *ExternalLogins) callback() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		provider, reqID, baseID := el.fromState(el.getState(r))
 
-		var conf internal.BaseConfig
-		if err := volatile.GetTyped("oauth_"+reqID, &conf); err != nil {
+		var conf model.DatabaseConfig
+		if err := backend.Cache.GetTyped("oauth_"+reqID, &conf); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		} else if conf.ID != baseID {
@@ -115,7 +115,7 @@ func (el *ExternalLogins) callback() http.Handler {
 			return
 		}
 
-		customer, err := datastore.FindAccount(conf.CustomerID)
+		customer, err := backend.DB.FindTenant(conf.TenantID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -135,13 +135,13 @@ func (el *ExternalLogins) callback() http.Handler {
 		}
 
 		var value string
-		if err := volatile.GetTyped(reqID+"_session", &value); err != nil {
+		if err := backend.Cache.GetTyped(reqID+"_session", &value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		sess, err := p.UnmarshalSession(value)
-		if err := volatile.GetTyped(reqID+"_session", &value); err != nil {
+		if err := backend.Cache.GetTyped(reqID+"_session", &value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -167,7 +167,7 @@ func (el *ExternalLogins) callback() http.Handler {
 			}
 
 			accessTokens := fmt.Sprintf("%s|%s", user.AccessToken, user.AccessTokenSecret)
-			sessionToken, err := el.registerOrLogin(conf.Name, provider, user.Email, accessTokens)
+			sessionToken, err := el.registerOrLogin(conf, provider, user.Email, accessTokens)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -182,7 +182,7 @@ func (el *ExternalLogins) callback() http.Handler {
 				AvatarURL: user.AvatarURL,
 			}
 
-			if err := volatile.SetTyped("extuser_"+reqID, extuser); err != nil {
+			if err := backend.Cache.SetTyped("extuser_"+reqID, extuser); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -198,7 +198,7 @@ func (*ExternalLogins) getUser(w http.ResponseWriter, r *http.Request) {
 	reqID := r.URL.Query().Get("reqid")
 
 	var extuser ExternalUser
-	if err := volatile.GetTyped("extuser_"+reqID, &extuser); err != nil {
+	if err := backend.Cache.GetTyped("extuser_"+reqID, &extuser); err != nil {
 		respond(w, http.StatusOK, false)
 		return
 	}
@@ -206,30 +206,30 @@ func (*ExternalLogins) getUser(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, extuser)
 }
 
-func (el *ExternalLogins) registerOrLogin(dbName, provider, email, accessToken string) (sessionToken string, err error) {
+func (el *ExternalLogins) registerOrLogin(conf model.DatabaseConfig, provider, email, accessToken string) (sessionToken string, err error) {
 	email = strings.ToLower(email)
 
-	exists, err := datastore.UserEmailExists(dbName, email)
+	exists, err := backend.DB.UserEmailExists(conf.Name, email)
 	if err != nil {
 		return
 	}
 
 	if exists {
-		return el.signIn(dbName, email)
+		return el.signIn(conf, email)
 	}
 
-	return el.signUp(dbName, provider, email, accessToken)
+	return el.signUp(conf, provider, email, accessToken)
 }
 
-func (el *ExternalLogins) signIn(dbName, email string) (sessionToken string, err error) {
-	tok, err := datastore.FindTokenByEmail(dbName, email)
+func (el *ExternalLogins) signIn(conf model.DatabaseConfig, email string) (sessionToken string, err error) {
+	tok, err := backend.DB.FindUserByEmail(conf.Name, email)
 	if err != nil {
 		return
 	}
 
 	token := fmt.Sprintf("%s|%s", tok.ID, tok.Token)
 
-	b, err := el.membership.getJWT(token)
+	b, err := backend.GetJWT(token)
 	if err != nil {
 		return
 	}
@@ -238,10 +238,12 @@ func (el *ExternalLogins) signIn(dbName, email string) (sessionToken string, err
 	return
 }
 
-func (el *ExternalLogins) signUp(dbName, provider, email, accessToken string) (sessionToken string, err error) {
+func (el *ExternalLogins) signUp(conf model.DatabaseConfig, provider, email, accessToken string) (sessionToken string, err error) {
 	pw := fmt.Sprintf("%s:%s", provider, accessToken)
 
-	b, _, err := el.membership.createAccountAndUser(dbName, email, pw, 0)
+	mship := backend.Membership(conf)
+
+	b, _, err := mship.CreateAccountAndUser(email, pw, 0)
 	if err != nil {
 		return
 	}
@@ -250,7 +252,7 @@ func (el *ExternalLogins) signUp(dbName, provider, email, accessToken string) (s
 	return
 }
 
-func (el *ExternalLogins) getProvider(dbID, provider, reqID string, info internal.OAuthConfig) (p goth.Provider, err error) {
+func (el *ExternalLogins) getProvider(dbID, provider, reqID string, info model.OAuthConfig) (p goth.Provider, err error) {
 	callbackURL := fmt.Sprintf(
 		"%s/oauth/callback",
 		config.Current.AppURL,

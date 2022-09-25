@@ -10,14 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/staticbackendhq/core/cache"
+	"github.com/staticbackendhq/core/backend"
 	"github.com/staticbackendhq/core/config"
-	"github.com/staticbackendhq/core/database/mongo"
-	"github.com/staticbackendhq/core/database/postgresql"
-	"github.com/staticbackendhq/core/email"
-	"github.com/staticbackendhq/core/internal"
-	"github.com/staticbackendhq/core/logger"
-	"github.com/staticbackendhq/core/storage"
+	"github.com/staticbackendhq/core/model"
 )
 
 const (
@@ -37,59 +32,32 @@ var (
 	userToken  string
 	rootToken  string
 
-	mship    *membership
-	database *Database
+	mship *membership
+	db    *Database
 )
 
 func TestMain(m *testing.M) {
 	config.Current = config.LoadConfig()
 
-	logz := logger.Get(config.Current)
+	backend.Setup(config.Current)
 
-	volatile = cache.NewCache(logz)
+	db = &Database{cache: backend.Cache, log: backend.Log}
 
-	storer = storage.Local{}
-
-	if strings.EqualFold(config.Current.DataStore, "mongo") {
-		cl, err := openMongoDatabase("mongodb://localhost:27017")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		datastore = mongo.New(cl, volatile.PublishDocument, logz)
-	} else {
-		dbConn, err := openPGDatabase("user=postgres password=postgres dbname=postgres sslmode=disable")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		datastore = postgresql.New(dbConn, volatile.PublishDocument, "./sql/", logz)
-	}
-
-	database = &Database{cache: volatile, log: logz}
-
-	mship = &membership{log: logz}
-
-	mp := config.Current.MailProvider
-	if strings.EqualFold(mp, internal.MailProviderSES) {
-		emailer = email.AWSSES{}
-	} else {
-		emailer = email.Dev{}
-	}
+	mship = &membership{log: backend.Log}
 
 	deleteAndSetupTestAccount()
 
-	hub := newHub(volatile)
+	hub := newHub(backend.Cache)
 	go hub.run()
 
 	ws := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveWs(logz, hub, w, r)
+		serveWs(backend.Log, hub, w, r)
 	}))
 	defer ws.Close()
 
 	wsURL = "ws" + strings.TrimPrefix(ws.URL, "http")
 
-	funexec = &functions{datastore: datastore, dbName: dbName}
+	funexec = &functions{datastore: backend.DB, dbName: dbName}
 
 	extexec = &extras{}
 
@@ -97,34 +65,35 @@ func TestMain(m *testing.M) {
 }
 
 func deleteAndSetupTestAccount() {
-	if err := datastore.DeleteCustomer(dbName, admEmail); err != nil {
+	if err := backend.DB.DeleteTenant(dbName, admEmail); err != nil {
 		log.Fatal(err)
 	}
 
-	cus := internal.Customer{
+	cus := model.Tenant{
 		Email: admEmail,
 	}
-	cus, err := datastore.CreateCustomer(cus)
+	cus, err := backend.DB.CreateTenant(cus)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	base := internal.BaseConfig{
-		CustomerID:    cus.ID,
+	base := model.DatabaseConfig{
+		TenantID:      cus.ID,
 		Name:          dbName,
 		AllowedDomain: []string{"localhost"},
 		IsActive:      true,
 		Created:       time.Now(),
 	}
 
-	base, err = datastore.CreateBase(base)
+	base, err = backend.DB.CreateDatabase(base)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	pubKey = base.ID
 
-	token, dbToken, err := mship.createAccountAndUser(dbName, admEmail, password, 100)
+	usrSvc := backend.Membership(base)
+	token, dbToken, err := usrSvc.CreateAccountAndUser(admEmail, password, 100)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -133,7 +102,7 @@ func deleteAndSetupTestAccount() {
 
 	rootToken = fmt.Sprintf("%s|%s|%s", dbToken.ID, dbToken.AccountID, dbToken.Token)
 
-	token, _, err = mship.createUser(dbName, dbToken.AccountID, userEmail, userPassword, 0)
+	token, _, err = usrSvc.CreateUser(dbToken.AccountID, userEmail, userPassword, 0)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -3,13 +3,14 @@ package mongo
 import (
 	"context"
 	"errors"
+	"github.com/staticbackendhq/core/logger"
 	"log"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/staticbackendhq/core/config"
-	"github.com/staticbackendhq/core/internal"
+	"github.com/staticbackendhq/core/model"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -23,10 +24,10 @@ const (
 
 var (
 	datastore    *Mongo
-	dbTest       internal.BaseConfig
-	adminAccount internal.Account
-	adminToken   internal.Token
-	adminAuth    internal.Auth
+	dbTest       model.DatabaseConfig
+	adminAccount model.Account
+	adminToken   model.User
+	adminAuth    model.Auth
 )
 
 func fakePubDocEvent(channel, typ string, v interface{}) {
@@ -51,13 +52,14 @@ func TestMain(m *testing.M) {
 		Client:          cl,
 		Ctx:             context.Background(),
 		PublishDocument: fakePubDocEvent,
+		log:             logger.Get(config.Current),
 	}
 
 	if err := datastore.Ping(); err != nil {
 		log.Fatal(err)
 	}
 
-	if err := datastore.DeleteCustomer(confDBName, adminEmail); err != nil {
+	if err := datastore.DeleteTenant(confDBName, adminEmail); err != nil {
 		log.Fatal(err)
 	}
 
@@ -80,7 +82,7 @@ func createCustomerAndDB() error {
 		return errors.New("admin email exists, should not")
 	}
 
-	cus := internal.Customer{
+	cus := model.Tenant{
 		Email:          adminEmail,
 		StripeID:       adminEmail,
 		SubscriptionID: adminEmail,
@@ -88,13 +90,13 @@ func createCustomerAndDB() error {
 		Created:        time.Now(),
 	}
 
-	cus, err = datastore.CreateCustomer(cus)
+	cus, err = datastore.CreateTenant(cus)
 	if err != nil {
 		return err
 	}
 
-	base := internal.BaseConfig{
-		CustomerID:    cus.ID,
+	base := model.DatabaseConfig{
+		TenantID:      cus.ID,
 		Name:          confDBName,
 		AllowedDomain: []string{"localhost"},
 		IsActive:      true,
@@ -106,7 +108,7 @@ func createCustomerAndDB() error {
 		return errors.New("testdb db exists")
 	}
 
-	base, err = datastore.CreateBase(base)
+	base, err = datastore.CreateDatabase(base)
 	if err != nil {
 		return err
 	}
@@ -117,14 +119,14 @@ func createCustomerAndDB() error {
 }
 
 func createAdminAccountAndToken() error {
-	acctID, err := datastore.CreateUserAccount(confDBName, adminEmail)
+	acctID, err := datastore.CreateAccount(confDBName, adminEmail)
 	if err != nil {
 		return err
 	}
 
-	adminAccount = internal.Account{ID: acctID, Email: adminEmail}
+	adminAccount = model.Account{ID: acctID, Email: adminEmail}
 
-	adminToken = internal.Token{
+	adminToken = model.User{
 		AccountID: adminAccount.ID,
 		Token:     adminEmail,
 		Email:     adminEmail,
@@ -133,14 +135,14 @@ func createAdminAccountAndToken() error {
 		Created:   time.Now(),
 	}
 
-	tokID, err := datastore.CreateUserToken(confDBName, adminToken)
+	tokID, err := datastore.CreateUser(confDBName, adminToken)
 	if err != nil {
 		return err
 	}
 
 	adminToken.ID = tokID
 
-	adminAuth = internal.Auth{
+	adminAuth = model.Auth{
 		AccountID: acctID,
 		UserID:    tokID,
 		Email:     adminEmail,
